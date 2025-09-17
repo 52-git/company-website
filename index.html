@@ -19,26 +19,9 @@
   <main>
     <h2>ようこそ</h2>
     <p>〇〇株式会社は、〇〇業界で最先端のサービスを提供しています。</p>
-      <h1>通过 Lightning Out 加载 Salesforce 数据</h1>
-  <div id="accountListContainer"></div>
-
-  <script>
-    $Lightning.use(
-      "c:MyOutApp",  // Aura Application 名称
-      function() {
-        $Lightning.createComponent(
-          "c:MapWrapper",  // Aura Wrapper
-          {},                      // 可传属性
-          "accountListContainer",  // 容器 DOM ID
-          function(cmp) {
-            console.log("Component created:", cmp);
-          }
-        );
-      },
-      "https://unisrvvppdemo-dev-ed.develop.my.site.com" // Salesforce Lightning 域名
-    );
-  </script>
-
+    <div class="cis-feature-row">
+       <iframe id="mapIframe" src="https://unisrvvppdemo-dev-ed.develop.my.site.com/powerMap" title="地図サービス"></iframe>
+	</div>
   </main>
   <footer>
     <p>&copy; 2025 〇〇株式会社</p>
