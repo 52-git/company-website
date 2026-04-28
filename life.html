@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务 + 还款管理</title>
+<style>
+body{font-family:sans-serif;background:#f5f5f5;margin:0}
+.container{max-width:600px;margin:auto;padding:16px}
+.card{background:#fff;border-radius:10px;padding:12px;margin-bottom:10px}
+.btn{padding:8px 12px;border:none;border-radius:6px;background:#007bff;color:#fff}
+.btn.small{padding:4px 8px;font-size:12px}
+input,select{width:100%;padding:6px;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="container">
+<h2>📋 任务 + 💳 还款管理</h2>
+
+<button class="btn" onclick="openForm()">+ 添加</button>
+
+<div id="list"></div>
+</div>
+
+<div id="form" style="display:none;position:fixed;top:10%;left:10%;right:10%;background:#fff;padding:16px;border-radius:10px">
+<h3>新增</h3>
+<select id="type">
+<option value="todo">待办</option>
+<option value="bill">账单/还款</option>
+</select>
+<input id="title" placeholder="名称">
+<input id="date" type="date">
+<input id="amount" type="number" placeholder="金额（可选）">
+<select id="repeat">
+<option value="none">不重复</option>
+<option value="monthly">每月自动生成</option>
+</select>
+<button class="btn" onclick="save()">保存</button>
+<button onclick="closeForm()">取消</button>
+</div>
+
+<script>
+let data = JSON.parse(localStorage.getItem('all_tasks')||'[]');
+let doneMap = JSON.parse(localStorage.getItem('done_map')||'{}');
+
+function monthKey(){
+ const d=new Date();
+ return d.getFullYear()+"-"+(d.getMonth()+1);
+}
+
+function saveData(){
+ localStorage.setItem('all_tasks',JSON.stringify(data));
+ localStorage.setItem('done_map',JSON.stringify(doneMap));
+}
+
+function render(){
+ const list=document.getElementById('list');
+ list.innerHTML='';
+ const now=new Date();
+
+ data.forEach((item,i)=>{
+ let displayDate=item.date;
+
+ // ⭐ 自动每月生成逻辑
+ if(item.repeat==='monthly' && item.date){
+   const day=new Date(item.date).getDate();
+   const d=new Date(now.getFullYear(),now.getMonth(),day);
+   displayDate=d.toISOString().split('T')[0];
+ }
+
+ const key=i+"_"+monthKey();
+ const done=doneMap[key]||false;
+
+ const div=document.createElement('div');
+ div.className='card';
+ div.innerHTML=`
+ <b>${item.title}</b> (${item.type==='bill'?'💳':'📋'})<br>
+ 日期: ${displayDate||'-'}<br>
+ ${item.amount?('金额: '+item.amount):''}<br>
+ 状态: ${done?'✅':'❌'}
+ <br>
+ <button class='btn small' onclick='toggle(${i})'>完成</button>
+ <button class='btn small' onclick='del(${i})'>删除</button>
+ `;
+ list.appendChild(div);
+ });
+}
+
+function toggle(i){
+ const key=i+"_"+monthKey();
+ doneMap[key]=!doneMap[key];
+ saveData();render();
+}
+
+function del(i){
+ data.splice(i,1);
+ saveData();render();
+}
+
+function openForm(){document.getElementById('form').style.display='block'}
+function closeForm(){document.getElementById('form').style.display='none'}
+
+function save(){
+ const item={
+ type:document.getElementById('type').value,
+ title:document.getElementById('title').value,
+ date:document.getElementById('date').value,
+ amount:document.getElementById('amount').value,
+ repeat:document.getElementById('repeat').value
+ };
+ data.push(item);
+ saveData();
+ closeForm();
+ render();
+}
+
+render();
+</script>
+</body>
+</html>
