@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>支払いリマインダー</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: linear-gradient(160deg,#0f172a 0%,#1a1040 100%); min-height: 100vh; }
+    input::-webkit-inner-spin-button { -webkit-appearance: none; }
+    input[type=number] { -moz-appearance: textfield; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+const STORAGE_KEY   = "cc_tracker_v2";
+const HISTORY_KEY   = "cc_tracker_history";
+const HISTORY_LIMIT = 3;
+
+const INITIAL_CARDS = [
+  { id: 1, credit: "楽天",        bank: "楽天",   bankKey: "rakuten" },
+  { id: 2, credit: "PayPay",      bank: "PayPay", bankKey: "paypay"  },
+  { id: 3, credit: "ヨドバシカメラ", bank: "みずほ", bankKey: "mizuho"  },
+  { id: 4, credit: "711",         bank: "みずほ", bankKey: "mizuho"  },
+  { id: 5, credit: "丸井",        bank: "みずほ", bankKey: "mizuho"  },
+];
+
+const BANK_NAME_TO_KEY = {
+  "楽天": "rakuten",
+  "PayPay": "paypay",
+  "paypay": "paypay",
+  "PAYPAY": "paypay",
+  "みずほ": "mizuho",
+  "ミズホ": "mizuho",
+};
+
+const BANK_STYLES = {
+  rakuten: { color: "#e01a1a", bg: "rgba(224,26,26,0.12)",  border: "rgba(224,26,26,0.3)"  },
+  paypay:  { color: "#f0780a", bg: "rgba(240,120,10,0.12)", border: "rgba(240,120,10,0.3)" },
+  mizuho:  { color: "#2f88d8", bg: "rgba(47,136,216,0.12)", border: "rgba(47,136,216,0.3)" },
+};
+
+const DEFAULT_BANK_STYLE = { color: "#cbd5e1", bg: "rgba(148,163,184,0.10)", border: "rgba(148,163,184,0.25)" };
+
+function resolveBankKey(bankName) {
+  const name = (bankName || "").trim();
+  return BANK_NAME_TO_KEY[name] || "custom";
+}
+
+function getBankStyle(bankKey, bankName) {
+  const key = bankKey && bankKey !== "custom" ? bankKey : resolveBankKey(bankName);
+  return BANK_STYLES[key] || DEFAULT_BANK_STYLE;
+}
+
+function keepLatestHistory(records) {
+  return [...records]
+    .sort((a, b) => String(a.monthKey).localeCompare(String(b.monthKey)))
+    .slice(-HISTORY_LIMIT);
+}
+
+function daysUntil(d) {
+  if (!d) return null;
+  const today = new Date();
+  const t = new Date(today.getFullYear(), today.getMonth(), d);
+  if (t < today) t.setMonth(t.getMonth() + 1);
+  return Math.ceil((t - today) / 86400000);
+}
+
+function formatAmount(v) {
+  if (v === null || v === undefined || v === "") return "";
+  const n = Number(v);
+  if (Number.isNaN(n)) return v;
+  return n.toLocaleString("ja-JP");
+}
+
+function formatPaymentDate(v) {
+  if (!v) return "";
+  return String(v).replace(/-/g, "/");
+}
+
+function normalizePaymentDateInput(v) {
+  return String(v || "").replace(/[^0-9/.-]/g, "").replace(/-/g, "/");
+}
+
+function DaysChip({ days }) {
+  if (days === null) return null;
+  const urgent = days <= 3, soon = days <= 7;
+  return (
+    <span style={{
+      fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 20,
+      background: urgent ? "rgba(239,68,68,0.18)" : soon ? "rgba(251,146,60,0.18)" : "rgba(99,102,241,0.15)",
+      color: urgent ? "#f87171" : soon ? "#fb923c" : "#818cf8",
+      border: `1px solid ${urgent ? "rgba(239,68,68,0.35)" : soon ? "rgba(251,146,60,0.35)" : "rgba(99,102,241,0.25)"}`,
+      whiteSpace: "nowrap", display: "inline-block",
+    }}>
+      {days === 0 ? "今日!" : `あと${days}日`}
+    </span>
+  );
+}
+
+/* ─── History Panel ─── */
+function HistoryPanel({ history, onDeleteMonth }) {
+  const [expanded, setExpanded] = useState(null);
+
+  if (history.length === 0) {
+    return (
+      <div style={{ marginTop: 24, padding: "30px 16px", borderRadius: 14, background: "#1e293b", border: "1px dashed #334155", textAlign: "center" }}>
+        <div style={{ fontSize: 28, marginBottom: 8 }}>📂</div>
+        <p style={{ color: "#475569", fontSize: 13 }}>まだ履歴がありません</p>
+        <p style={{ color: "#334155", fontSize: 11, marginTop: 4 }}>「履歴保存」ボタンで直近3ヶ月分まで保存できます</p>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 8 }}>
+      {[...history].reverse().map((rec, idx) => {
+        const paidCount = rec.cards.filter(c => c.paid).length;
+        const total     = rec.cards.length;
+        const allPaid   = paidCount === total;
+        const isOpen    = expanded === rec.monthKey;
+
+        return (
+          <div key={rec.monthKey} style={{
+            background: "#1e293b", borderRadius: 12,
+            border: `1px solid ${allPaid ? "rgba(34,197,94,0.25)" : "#2d3748"}`,
+            overflow: "hidden",
+          }}>
+            {/* Header row */}
+            <div
+              onClick={() => setExpanded(isOpen ? null : rec.monthKey)}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", cursor: "pointer" }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 16 }}>{allPaid ? "✅" : "📋"}</span>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9" }}>{rec.label}</div>
+                  <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                    {paidCount}/{total} 件完了
+                    {!allPaid && <span style={{ color: "#fb923c", marginLeft: 6 }}>未払い {total - paidCount} 件</span>}
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {/* mini progress */}
+                <div style={{ width: 48, height: 4, background: "#0f172a", borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${total ? paidCount/total*100 : 0}%`, background: allPaid ? "#22c55e" : "#6366f1", borderRadius: 2 }} />
+                </div>
+                <span style={{ color: "#475569", fontSize: 16, transform: isOpen ? "rotate(180deg)" : "none", transition: "transform .2s" }}>⌄</span>
+              </div>
+            </div>
+
+            {/* Expanded detail */}
+            {isOpen && (
+              <div style={{ borderTop: "1px solid #2d3748", padding: "10px 14px 14px" }}>
+                {rec.cards.map((c, i) => {
+                  const bs = getBankStyle(c.bankKey, c.bank);
+                  return (
+                    <div key={i} style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      padding: "8px 0",
+                      borderBottom: i < rec.cards.length - 1 ? "1px solid #1e2d3d" : "none",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 15 }}>{c.paid ? "✓" : "✗"}</span>
+                        <span style={{ fontSize: 13, color: c.paid ? "#94a3b8" : "#f1f5f9", fontWeight: 600, textDecoration: c.paid ? "line-through" : "none" }}>
+                          {c.credit}
+                        </span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        {c.dueDay && (
+                          <span style={{ fontSize: 11, color: "#475569" }}>{c.dueDay}日引き</span>
+                        )}
+                        {c.amount && (
+                          <span style={{ fontSize: 11, color: "#cbd5e1" }}>¥{formatAmount(c.amount)}</span>
+                        )}
+                        {c.paymentDate && (
+                          <span style={{ fontSize: 11, color: "#64748b" }}>{formatPaymentDate(c.paymentDate)}</span>
+                        )}
+                        <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4, background: bs.bg, border: `1px solid ${bs.border}`, color: bs.color }}>
+                          {c.bank}
+                        </span>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: c.paid ? "#22c55e" : "#ef4444" }}>
+                          {c.paid ? "済" : "未"}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+                <button
+                  onClick={() => onDeleteMonth(rec.monthKey)}
+                  style={{ marginTop: 12, background: "transparent", border: "1px solid #334155", color: "#475569", padding: "5px 12px", borderRadius: 6, cursor: "pointer", fontSize: 11 }}
+                >
+                  この月の記録を削除
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ─── Main App ─── */
+function App() {
+  const now        = new Date();
+  const monthLabel = now.toLocaleDateString("ja-JP", { year: "numeric", month: "long" });
+  const monthKey   = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}`;
+
+  const [cards,   setCards]   = useState(INITIAL_CARDS);
+  const [paid,    setPaid]    = useState({});
+  const [dueDays, setDueDays] = useState({});
+  const [amounts, setAmounts] = useState({});
+  const [paymentDates, setPaymentDates] = useState({});
+  const [history, setHistory] = useState([]);
+  const [tab,     setTab]     = useState("today"); // "today" | "history"
+  const [adding,  setAdding]  = useState(false);
+  const [newCredit,  setNewCredit]  = useState("");
+  const [newBank, setNewBank] = useState("みずほ");
+  const [newAmount, setNewAmount] = useState("");
+  const [newPaymentDate, setNewPaymentDate] = useState("");
+  const [resetConfirm, setResetConfirm] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) { const d = JSON.parse(raw); if (d.cards) setCards(d.cards); if (d.paid) setPaid(d.paid); if (d.dueDays) setDueDays(d.dueDays); if (d.amounts) setAmounts(d.amounts); if (d.paymentDates) setPaymentDates(d.paymentDates); }
+    } catch {}
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      if (raw) setHistory(keepLatestHistory(JSON.parse(raw)));
+    } catch {}
+  }, []);
+
+  const saveCurrent = (c, p, dd, am = amounts, pd = paymentDates) => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ cards: c, paid: p, dueDays: dd, amounts: am, paymentDates: pd })); } catch {}
+  };
+  const saveHistory = (h) => {
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch {}
+  };
+
+  const toggle  = (id) => { const n = {...paid,    [id]: !paid[id] }; setPaid(n); saveCurrent(cards, n, dueDays); };
+  const setDay  = (id, v) => { const n = {...dueDays, [id]: v };       setDueDays(n); saveCurrent(cards, paid, n); };
+  const setAmount = (id, v) => { const n = {...amounts, [id]: v }; setAmounts(n); saveCurrent(cards, paid, dueDays, n, paymentDates); };
+  const setPaymentDate = (id, v) => { const n = {...paymentDates, [id]: normalizePaymentDateInput(v) }; setPaymentDates(n); saveCurrent(cards, paid, dueDays, amounts, n); };
+  const remove  = (id) => {
+    const n = cards.filter(c => c.id !== id);
+    const np = {...paid}; delete np[id];
+    const nd = {...dueDays}; delete nd[id];
+    const na = {...amounts}; delete na[id];
+    const npd = {...paymentDates}; delete npd[id];
+    setCards(n); setPaid(np); setDueDays(nd); setAmounts(na); setPaymentDates(npd);
+    saveCurrent(n, np, nd, na, npd);
+  };
+  const showMessage = (text) => {
+    setMessage(text);
+    setTimeout(() => setMessage(""), 2200);
+  };
+
+  const addCard = () => {
+    if (!newCredit.trim() || !newBank.trim()) return;
+    const bankName = newBank.trim();
+    const newId = Date.now();
+    const n = [...cards, { id: newId, credit: newCredit.trim(), bank: bankName, bankKey: resolveBankKey(bankName) }];
+    const na = newAmount ? { ...amounts, [newId]: newAmount } : amounts;
+    const npd = newPaymentDate ? { ...paymentDates, [newId]: newPaymentDate } : paymentDates;
+    setCards(n); setAmounts(na); setPaymentDates(npd); saveCurrent(n, paid, dueDays, na, npd);
+    setNewCredit(""); setNewBank("みずほ"); setNewAmount(""); setNewPaymentDate(""); setAdding(false);
+  };
+
+  const saveCurrentMonthToHistory = () => {
+    const record = {
+      monthKey,
+      label: monthLabel,
+      savedAt: new Date().toISOString(),
+      cards: cards.map(c => ({
+        credit: c.credit, bank: c.bank, bankKey: c.bankKey || resolveBankKey(c.bank),
+        paid: !!paid[c.id],
+        dueDay: dueDays[c.id] || null,
+        amount: amounts[c.id] || null,
+        paymentDate: paymentDates[c.id] || null,
+      })),
+    };
+    const existingIdx = history.findIndex(h => h.monthKey === monthKey);
+    const mergedHistory  = existingIdx >= 0
+      ? history.map((h, i) => i === existingIdx ? record : h)
+      : [...history, record];
+    const newHistory = keepLatestHistory(mergedHistory);
+    setHistory(newHistory);
+    saveHistory(newHistory);
+    showMessage("履歴を保存しました（直近3ヶ月分のみ保持）");
+  };
+
+  const resetMonth = () => {
+    setPaid({});
+    saveCurrent(cards, {}, dueDays, amounts, paymentDates);
+    setResetConfirm(false);
+    setTab("today");
+    showMessage("今月のチェック状態をリセットしました");
+  };
+
+  const deleteMonth = (key) => {
+    const n = history.filter(h => h.monthKey !== key);
+    setHistory(n); saveHistory(n);
+  };
+
+  const paidCount = cards.filter(c => paid[c.id]).length;
+  const allDone   = paidCount === cards.length && cards.length > 0;
+
+  const inputBase = { background: "#0f172a", border: "1px solid #334155", borderRadius: 7, color: "#cbd5e1", padding: "6px 10px", fontSize: 13, outline: "none", width: "100%" };
+
+  return (
+    <div style={{ minHeight: "100vh", fontFamily: "'Helvetica Neue',Arial,'Hiragino Kaku Gothic ProN',sans-serif", color: "#e2e8f0", padding: "24px 16px" }}>
+      <div style={{ maxWidth: 560, margin: "0 auto" }}>
+
+        {/* ── Header ── */}
+        <p style={{ fontSize: 10, letterSpacing: 3, color: "#475569", marginBottom: 4 }}>支払い管理</p>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 800 }}>{monthLabel}</h1>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button onClick={saveCurrentMonthToHistory} style={gBtn("#22c55e")}>履歴保存</button>
+            <button onClick={() => { setAdding(v => !v); setTab("today"); }} style={gBtn("#6366f1")}>{adding ? "✕ キャンセル" : "+ カード追加"}</button>
+            {!resetConfirm
+              ? <button onClick={() => setResetConfirm(true)} style={gBtn("#475569")}>月次リセット</button>
+              : <button onClick={resetMonth} style={gBtn("#ef4444")}>チェックのみリセット？</button>}
+          </div>
+        </div>
+
+        {/* ── Tabs ── */}
+        <div style={{ display: "flex", gap: 0, background: "#1e293b", borderRadius: 10, padding: 3, marginBottom: 16 }}>
+          {[
+            { key: "today",   label: "今月",  icon: "📅" },
+            { key: "history", label: `履歴${history.length > 0 ? ` (${history.length})` : ""}`, icon: "🗂" },
+          ].map(t => (
+            <button key={t.key} onClick={() => setTab(t.key)} style={{
+              flex: 1, padding: "8px 0", border: "none", cursor: "pointer", borderRadius: 8, fontSize: 13, fontWeight: 600, transition: "all .2s",
+              background: tab === t.key ? "#334155" : "transparent",
+              color: tab === t.key ? "#f1f5f9" : "#475569",
+            }}>
+              {t.icon} {t.label}
+            </button>
+          ))}
+        </div>
+
+        {message && (
+          <div style={{ marginBottom: 12, padding: "8px 12px", borderRadius: 8, background: "rgba(34,197,94,0.10)", border: "1px solid rgba(34,197,94,0.25)", color: "#86efac", fontSize: 12, fontWeight: 600 }}>
+            {message}
+          </div>
+        )}
+
+        {/* ── TODAY TAB ── */}
+        {tab === "today" && (<>
+          {/* Progress */}
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+              <span style={{ fontSize: 11, color: "#64748b" }}>完了 {paidCount} / {cards.length}</span>
+              {allDone && <span style={{ fontSize: 11, color: "#22c55e", fontWeight: 700 }}>✓ すべて完了！</span>}
+            </div>
+            <div style={{ height: 5, background: "#1e293b", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${cards.length ? paidCount/cards.length*100 : 0}%`, background: allDone ? "#22c55e" : "linear-gradient(90deg,#6366f1,#a78bfa)", borderRadius: 3, transition: "width .4s" }} />
+            </div>
+          </div>
+
+          {/* Add form */}
+          {adding && (
+            <div style={{ marginBottom: 12, background: "#1e293b", borderRadius: 12, padding: "12px 14px", border: "1px solid #334155", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <input value={newCredit} onChange={e => setNewCredit(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && addCard()}
+                placeholder="クレジットカード名"
+                style={{ ...inputBase, flex: "1 1 120px" }} />
+              <input value={newBank} onChange={e => setNewBank(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && addCard()}
+                placeholder="引き落とし口座"
+                style={{ ...inputBase, flex: "1 1 100px" }} />
+              <input type="number" min="0" value={newAmount} onChange={e => setNewAmount(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && addCard()}
+                placeholder="支払金額"
+                style={{ ...inputBase, flex: "1 1 90px" }} />
+              <input type="text" inputMode="numeric" value={newPaymentDate} onChange={e => setNewPaymentDate(normalizePaymentDateInput(e.target.value))}
+                onKeyDown={e => e.key === "Enter" && addCard()}
+                placeholder="支払日 例: 7/10" maxLength="10"
+                style={{ ...inputBase, flex: "1 1 132px" }} />
+              <button onClick={addCard} style={{ background: "#6366f1", border: "none", color: "white", padding: "7px 16px", borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>追加</button>
+            </div>
+          )}
+
+          {/* Column headers */}
+          <div style={{ overflowX: "auto", paddingBottom: 2 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "110px 70px 60px 82px 88px 34px 28px", gap: 6, marginBottom: 6, padding: "0 2px", minWidth: 520 }}>
+              {["クレジットカード","口座","引落日","支払金額","支払日","",""].map((h,i) =>
+                <span key={i} style={{ fontSize: 9, color: "#475569", letterSpacing: 1 }}>{h}</span>)}
+            </div>
+
+            {/* Card rows */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            {cards.map(card => {
+              const isPaid = !!paid[card.id];
+              const bs     = getBankStyle(card.bankKey, card.bank);
+              const days   = daysUntil(dueDays[card.id]);
+              return (
+                <div key={card.id} style={{
+                  display: "grid", gridTemplateColumns: "110px 70px 60px 82px 88px 34px 28px", gap: 6, minWidth: 520,
+                  alignItems: "center",
+                  background: isPaid ? "rgba(34,197,94,0.06)" : "#1e293b",
+                  border: `1px solid ${isPaid ? "rgba(34,197,94,0.25)" : "#2d3748"}`,
+                  borderRadius: 12, padding: "11px 12px", transition: "all .25s", opacity: isPaid ? 0.6 : 1,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                    <div style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: isPaid ? "#22c55e" : "#6366f1" }} />
+                    <span style={{ fontSize: 13, fontWeight: 700, textDecoration: isPaid ? "line-through" : "none", color: isPaid ? "#475569" : "#f1f5f9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {card.credit}
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 5, background: bs.bg, border: `1px solid ${bs.border}`, color: bs.color, display: "inline-block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {card.bank}
+                  </span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                      <input type="number" min="1" max="31"
+                        value={dueDays[card.id] || ""}
+                        onChange={e => setDay(card.id, e.target.value ? Number(e.target.value) : "")}
+                        placeholder="日"
+                        style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 6, color: "#cbd5e1", width: 38, textAlign: "center", padding: "4px 0", fontSize: 12, outline: "none" }} />
+                      <span style={{ fontSize: 10, color: "#475569" }}>日</span>
+                    </div>
+                    {!isPaid && <DaysChip days={days} />}
+                  </div>
+                  <input type="number" min="0" value={amounts[card.id] || ""}
+                    onChange={e => setAmount(card.id, e.target.value)}
+                    placeholder="円"
+                    style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 6, color: "#cbd5e1", width: "100%", padding: "4px 6px", fontSize: 12, outline: "none" }} />
+                  <input type="text" inputMode="numeric" value={formatPaymentDate(paymentDates[card.id] || "")}
+                    onChange={e => setPaymentDate(card.id, e.target.value)}
+                    placeholder="7/10" maxLength="10"
+                    style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 6, color: "#cbd5e1", width: "100%", padding: "4px 6px", fontSize: 12, outline: "none" }} />
+                  <button onClick={() => toggle(card.id)} style={{
+                    width: 30, height: 30, borderRadius: "50%", cursor: "pointer",
+                    border: `2px solid ${isPaid ? "#22c55e" : "#475569"}`,
+                    background: isPaid ? "#22c55e" : "transparent",
+                    color: "white", fontSize: 14, fontWeight: 900,
+                    display: "flex", alignItems: "center", justifyContent: "center", transition: "all .2s",
+                  }}>
+                    {isPaid ? "✓" : ""}
+                  </button>
+                  <button onClick={() => remove(card.id)} style={{
+                    width: 26, height: 26, borderRadius: 6, cursor: "pointer",
+                    border: "1px solid #334155", background: "transparent",
+                    color: "#475569", fontSize: 14,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                  }}
+                    onMouseEnter={e => Object.assign(e.currentTarget.style, { borderColor:"#ef4444", color:"#ef4444", background:"rgba(239,68,68,0.1)" })}
+                    onMouseLeave={e => Object.assign(e.currentTarget.style, { borderColor:"#334155", color:"#475569", background:"transparent" })}
+                  >×</button>
+                </div>
+              );
+            })}
+          </div>
+          </div>
+
+          {allDone && (
+            <div style={{ marginTop: 16, padding: 14, borderRadius: 12, textAlign: "center", background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)", color: "#4ade80", fontSize: 14, fontWeight: 600 }}>
+              🎉 今月の支払いはすべて完了しました！
+            </div>
+          )}
+        </>)}
+
+        {/* ── HISTORY TAB ── */}
+        {tab === "history" && (
+          <HistoryPanel history={history} onDeleteMonth={deleteMonth} />
+        )}
+
+        <p style={{ marginTop: 20, fontSize: 10, color: "#334155", textAlign: "center" }}>データはこのブラウザに自動保存されます</p>
+      </div>
+    </div>
+  );
+}
+
+function gBtn(c) {
+  return { background: "transparent", border: `1px solid ${c}`, color: c, padding: "6px 12px", borderRadius: 7, cursor: "pointer", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" };
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
